@@ -135,7 +135,7 @@ data class WbOption(val label: String, val mode: Int)
 val WB_OPTIONS = listOf(
     WbOption("Auto", CaptureRequest.CONTROL_AWB_MODE_AUTO),
     WbOption("Słońce", CaptureRequest.CONTROL_AWB_MODE_DAYLIGHT),
-    WbOption("Chmury", CaptureRequest.CONTROL_AWB_MODE_CLOUDY),
+    WbOption("Chmury", CaptureRequest.CONTROL_AWB_MODE_DAYLIGHT), 
     WbOption("Żarówka", CaptureRequest.CONTROL_AWB_MODE_INCANDESCENT),
     WbOption("Fluoresc.", CaptureRequest.CONTROL_AWB_MODE_FLUORESCENT)
 )
