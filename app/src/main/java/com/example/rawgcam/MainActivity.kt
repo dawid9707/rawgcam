@@ -18,11 +18,14 @@ import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -34,7 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -109,6 +112,46 @@ enum class CaptureMode(val label: String) {
     FAST_YUV("Fast Frame")
 }
 
+data class ShutterOption(val label: String, val nanos: Long)
+
+val SHUTTER_SPEEDS = listOf(
+    ShutterOption("Auto", -1L),
+    ShutterOption("1/2000s", 500_000L),
+    ShutterOption("1/1000s", 1_000_000L),
+    ShutterOption("1/500s", 2_000_000L),
+    ShutterOption("1/250s", 4_000_000L),
+    ShutterOption("1/125s", 8_000_000L),
+    ShutterOption("1/60s", 16_666_666L),
+    ShutterOption("1/30s", 33_333_333L),
+    ShutterOption("1/15s", 66_666_666L),
+    ShutterOption("1/4s", 250_000_000L),
+    ShutterOption("1s", 1_000_000_000L)
+)
+
+val ISO_OPTIONS = listOf(-1, 100, 200, 400, 800, 1600, 3200, 6400)
+
+data class WbOption(val label: String, val mode: Int)
+
+val WB_OPTIONS = listOf(
+    WbOption("Auto", CaptureRequest.CONTROL_AWB_MODE_AUTO),
+    WbOption("Słońce", CaptureRequest.CONTROL_AWB_MODE_DAYLIGHT),
+    WbOption("Chmury", CaptureRequest.CONTROL_AWB_MODE_CLOUDY),
+    WbOption("Żarówka", CaptureRequest.CONTROL_AWB_MODE_INCANDESCENT),
+    WbOption("Fluoresc.", CaptureRequest.CONTROL_AWB_MODE_FLUORESCENT)
+)
+
+data class FocusOption(val label: String, val diopters: Float)
+
+val FOCUS_OPTIONS = listOf(
+    FocusOption("Auto", -1f),
+    FocusOption("Makro", 10.0f),
+    FocusOption("0.5m", 2.0f),
+    FocusOption("1m", 1.0f),
+    FocusOption("∞", 0.0f)
+)
+
+enum class ManualTab { ISO, SHUTTER, EV, WB, FOCUS }
+
 @Composable
 fun GCamRawApp(cameraExecutor: ExecutorService) {
     val context = LocalContext.current
@@ -121,74 +164,111 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
     var lastCapturedUri by remember { mutableStateOf<Uri?>(null) }
     var isCapturing by remember { mutableStateOf(false) }
 
+    // Ustawienia Manualne Pro
+    var isManualPanelOpen by remember { mutableStateOf(false) }
+    var activeTab by remember { mutableStateOf(ManualTab.ISO) }
+    
+    var selectedIso by remember { mutableIntStateOf(-1) } // -1 = Auto
+    var selectedShutter by remember { mutableStateOf(SHUTTER_SPEEDS[0]) } // Auto
+    var selectedEv by remember { mutableIntStateOf(0) } // 0 EV
+    var selectedWb by remember { mutableStateOf(WB_OPTIONS[0]) } // Auto WB
+    var selectedFocus by remember { mutableStateOf(FOCUS_OPTIONS[0]) } // Auto Focus
+
     var imageCapture: ImageCapture? by remember { mutableStateOf(null) }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
-        AndroidView(
-            factory = { ctx ->
-                val previewView = PreviewView(ctx).apply {
-                    scaleType = PreviewView.ScaleType.FILL_CENTER
-                }
-
-                val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                cameraProviderFuture.addListener({
-                    val cameraProvider = cameraProviderFuture.get()
-
-                    val previewBuilder = Preview.Builder()
-                    Camera2Interop.Extender(previewBuilder).apply {
-                        setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_OFF)
-                        setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
-                        setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE, CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE_OFF)
-                        setCaptureRequestOption(CaptureRequest.TONEMAP_MODE, CaptureRequest.TONEMAP_MODE_FAST)
-                        setCaptureRequestOption(CaptureRequest.HOT_PIXEL_MODE, CaptureRequest.HOT_PIXEL_MODE_OFF)
-                    }
-                    val preview = previewBuilder.build().also {
-                        it.setSurfaceProvider(previewView.surfaceProvider)
+        // Przeładowanie aparatu przy zmianie parametrów manualnych
+        key(lensFacing, selectedIso, selectedShutter, selectedEv, selectedWb, selectedFocus) {
+            AndroidView(
+                factory = { ctx ->
+                    val previewView = PreviewView(ctx).apply {
+                        scaleType = PreviewView.ScaleType.FILL_CENTER
                     }
 
-                    val captureBuilder = ImageCapture.Builder()
-                        .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                        .setJpegQuality(100)
+                    val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+                    cameraProviderFuture.addListener({
+                        val cameraProvider = cameraProviderFuture.get()
 
-                    Camera2Interop.Extender(captureBuilder).apply {
-                        setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_OFF)
-                        setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
-                        setCaptureRequestOption(CaptureRequest.SHADING_MODE, CaptureRequest.SHADING_MODE_OFF)
-                        setCaptureRequestOption(CaptureRequest.HOT_PIXEL_MODE, CaptureRequest.HOT_PIXEL_MODE_OFF)
-                        setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE, CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE_OFF)
-                        setCaptureRequestOption(CaptureRequest.CONTROL_SCENE_MODE, CaptureRequest.CONTROL_SCENE_MODE_DISABLED)
-                    }
+                        val previewBuilder = Preview.Builder()
+                        val captureBuilder = ImageCapture.Builder()
+                            .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                            .setJpegQuality(100)
 
-                    val imgCapture = captureBuilder.build()
-                    imageCapture = imgCapture
+                        // Extender dla podglądu i przechwytywania kadrów
+                        listOf(
+                            Camera2Interop.Extender(previewBuilder),
+                            Camera2Interop.Extender(captureBuilder)
+                        ).forEach { extender ->
+                            // 1. Zero ISP processing
+                            extender.setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_OFF)
+                            extender.setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
+                            extender.setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE, CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE_OFF)
+                            extender.setCaptureRequestOption(CaptureRequest.TONEMAP_MODE, CaptureRequest.TONEMAP_MODE_FAST)
+                            extender.setCaptureRequestOption(CaptureRequest.HOT_PIXEL_MODE, CaptureRequest.HOT_PIXEL_MODE_OFF)
+                            extender.setCaptureRequestOption(CaptureRequest.SHADING_MODE, CaptureRequest.SHADING_MODE_OFF)
 
-                    val cameraSelector = CameraSelector.Builder()
-                        .requireLensFacing(lensFacing)
-                        .build()
+                            // 2. Ręczna Ekspozycja (ISO & Czas Naświetlania)
+                            if (selectedIso != -1 || selectedShutter.nanos != -1L) {
+                                extender.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+                                if (selectedIso != -1) {
+                                    extender.setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, selectedIso)
+                                }
+                                if (selectedShutter.nanos != -1L) {
+                                    extender.setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, selectedShutter.nanos)
+                                }
+                            } else {
+                                extender.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                                extender.setCaptureRequestOption(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, selectedEv)
+                            }
 
-                    try {
-                        cameraProvider.unbindAll()
-                        cameraProvider.bindToLifecycle(
-                            lifecycleOwner,
-                            cameraSelector,
-                            preview,
-                            imgCapture
-                        )
-                    } catch (exc: Exception) {
-                        Log.e("RawGCam", "Błąd inicjalizacji aparatu", exc)
-                    }
-                }, ContextCompat.getMainExecutor(ctx))
+                            // 3. Ręczny Balans Bieli (WB)
+                            extender.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, selectedWb.mode)
 
-                previewView
-            },
-            modifier = Modifier.fillMaxSize()
-        )
+                            // 4. Ręczna Ostrość (Focus)
+                            if (selectedFocus.diopters >= 0f) {
+                                extender.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                                extender.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, selectedFocus.diopters)
+                            } else {
+                                extender.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                            }
+                        }
+
+                        val preview = previewBuilder.build().also {
+                            it.setSurfaceProvider(previewView.surfaceProvider)
+                        }
+
+                        val imgCapture = captureBuilder.build()
+                        imageCapture = imgCapture
+
+                        val cameraSelector = CameraSelector.Builder()
+                            .requireLensFacing(lensFacing)
+                            .build()
+
+                        try {
+                            cameraProvider.unbindAll()
+                            cameraProvider.bindToLifecycle(
+                                lifecycleOwner,
+                                cameraSelector,
+                                preview,
+                                imgCapture
+                            )
+                        } catch (exc: Exception) {
+                            Log.e("RawGCam", "Błąd inicjalizacji aparatu", exc)
+                        }
+                    }, ContextCompat.getMainExecutor(ctx))
+
+                    previewView
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
 
         if (isGridEnabled) {
             CameraGridOverlay()
         }
 
+        // Górny pasek kontrolny
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -207,25 +287,27 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                 )
             }
 
+            // Przycisk otwierania panelu Manual/Pro
             Surface(
-                color = Color(0xFF1E88E5).copy(alpha = 0.85f),
+                onClick = { isManualPanelOpen = !isManualPanelOpen },
+                color = if (isManualPanelOpen) Color(0xFF8AB4F8) else Color(0xFF1E88E5).copy(alpha = 0.85f),
                 shape = RoundedCornerShape(20.dp)
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
                         imageVector = Icons.Default.Tune,
                         contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(16.dp)
+                        tint = if (isManualPanelOpen) Color.Black else Color.White,
+                        modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = selectedMode.label,
-                        color = Color.White,
-                        fontSize = 12.sp,
+                        text = if (isManualPanelOpen) "Zamknij PRO" else "Ustawienia PRO",
+                        color = if (isManualPanelOpen) Color.Black else Color.White,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -243,18 +325,125 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
             }
         }
 
+        // Dolny panel ustawień i migawki
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
-                .background(Color.Black.copy(alpha = 0.6f))
-                .padding(bottom = 32.dp, top = 16.dp),
+                .background(Color.Black.copy(alpha = 0.75f))
+                .padding(bottom = 24.dp, top = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Panel Manualny (Gdy otwarty)
+            AnimatedVisibility(
+                visible = isManualPanelOpen,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp)
+                ) {
+                    // Zakładki ustawień (ISO, Shutter, EV, WB, Focus)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceAround
+                    ) {
+                        ManualTab.entries.forEach { tab ->
+                            val isSelected = activeTab == tab
+                            Text(
+                                text = when(tab) {
+                                    ManualTab.ISO -> "ISO (${if (selectedIso == -1) "Auto" else selectedIso})"
+                                    ManualTab.SHUTTER -> "Czas (${selectedShutter.label})"
+                                    ManualTab.EV -> "EV (${if (selectedEv > 0) "+$selectedEv" else selectedEv})"
+                                    ManualTab.WB -> "WB (${selectedWb.label})"
+                                    ManualTab.FOCUS -> "AF/MF (${selectedFocus.label})"
+                                },
+                                color = if (isSelected) Color(0xFF8AB4F8) else Color.LightGray,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                fontSize = 12.sp,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(if (isSelected) Color(0xFF8AB4F8).copy(alpha = 0.2f) else Color.Transparent)
+                                    .clickable { activeTab = tab }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(color = Color.DarkGray, thickness = 0.5.dp, modifier = Modifier.padding(vertical = 6.dp))
+
+                    // Opcje dla wybranej zakładki
+                    LazyRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        when (activeTab) {
+                            ManualTab.ISO -> {
+                                items(ISO_OPTIONS) { iso ->
+                                    val isSelected = selectedIso == iso
+                                    FilterChip(
+                                        selected = isSelected,
+                                        onClick = { selectedIso = iso },
+                                        label = { Text(if (iso == -1) "Auto" else "$iso") }
+                                    )
+                                }
+                            }
+                            ManualTab.SHUTTER -> {
+                                items(SHUTTER_SPEEDS) { shutter ->
+                                    val isSelected = selectedShutter == shutter
+                                    FilterChip(
+                                        selected = isSelected,
+                                        onClick = { selectedShutter = shutter },
+                                        label = { Text(shutter.label) }
+                                    )
+                                }
+                            }
+                            ManualTab.EV -> {
+                                items((-3..3).toList()) { ev ->
+                                    val isSelected = selectedEv == ev
+                                    FilterChip(
+                                        selected = isSelected,
+                                        onClick = { selectedEv = ev },
+                                        label = { Text(if (ev > 0) "+$ev EV" else "$ev EV") }
+                                    )
+                                }
+                            }
+                            ManualTab.WB -> {
+                                items(WB_OPTIONS) { wb ->
+                                    val isSelected = selectedWb == wb
+                                    FilterChip(
+                                        selected = isSelected,
+                                        onClick = { selectedWb = wb },
+                                        label = { Text(wb.label) }
+                                    )
+                                }
+                            }
+                            ManualTab.FOCUS -> {
+                                items(FOCUS_OPTIONS) { focus ->
+                                    val isSelected = selectedFocus == focus
+                                    FilterChip(
+                                        selected = isSelected,
+                                        onClick = { selectedFocus = focus },
+                                        label = { Text(focus.label) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Przełącznik trybów przetwarzania
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 20.dp),
+                    .padding(bottom = 16.dp),
                 horizontalArrangement = Arrangement.Center
             ) {
                 CaptureMode.entries.forEach { mode ->
@@ -271,6 +460,7 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                 }
             }
 
+            // Przyciski migawki, podglądu i zmiany obiektywu
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
