@@ -5,19 +5,18 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
 import android.hardware.camera2.*
-import android.media.Image
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
 import android.util.Range
-import android.util.Size
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -46,8 +45,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import java.io.FileOutputStream
-import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.ExecutorService
@@ -119,17 +116,15 @@ enum class CaptureMode(val label: String) {
 
 data class LensOption(val label: String, val zoomRatio: Float)
 
-// Dedykowane ogniskowe dla obiektywów Samsung Galaxy S25 / S25 Ultra
 val S25_LENSES = listOf(
-    LensOption("0.6x", 0.6f), // Ultra Wide
-    LensOption("1x", 1.0f),   // Main ISOCELL
-    LensOption("3x", 3.0f),   // Telephoto 1
-    LensOption("5x", 5.0f)    // Periscope Telephoto 2
+    LensOption("0.6x", 0.6f),
+    LensOption("1x", 1.0f),
+    LensOption("3x", 3.0f),
+    LensOption("5x", 5.0f)
 )
 
 data class ShutterOption(val label: String, val nanos: Long)
 
-// Rozszerzone czasy migawki dopasowane do sensorów Samsung ISOCELL (1/8000s - 30s)
 val SHUTTER_SPEEDS = listOf(
     ShutterOption("Auto", -1L),
     ShutterOption("1/8000s", 125_000L),
@@ -150,7 +145,6 @@ val SHUTTER_SPEEDS = listOf(
     ShutterOption("30s", 30_000_000_000L)
 )
 
-// Rozszerzony zakres ISO dla Galaxy S25 (ISO 50 do 12800)
 val ISO_OPTIONS = listOf(-1, 50, 100, 200, 400, 800, 1600, 3200, 6400, 12800)
 
 data class WbOption(val label: String, val mode: Int)
@@ -175,20 +169,20 @@ val FOCUS_OPTIONS = listOf(
 
 enum class ManualTab { ISO, SHUTTER, EV, WB, FOCUS }
 
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalCamera2Interop::class)
 @Composable
 fun GCamRawApp(cameraExecutor: ExecutorService) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
     var selectedMode by remember { mutableStateOf(CaptureMode.ZERO_PROCESSING) }
-    var selectedLens by remember { mutableStateOf(S25_LENSES[1]) } // Domyślnie 1x Wide
+    var selectedLens by remember { mutableStateOf(S25_LENSES[1]) }
     var isGridEnabled by remember { mutableStateOf(false) }
     var isFlashEnabled by remember { mutableStateOf(false) }
     var lensFacing by remember { mutableIntStateOf(CameraSelector.LENS_FACING_BACK) }
     var lastCapturedUri by remember { mutableStateOf<Uri?>(null) }
     var isCapturing by remember { mutableStateOf(false) }
 
-    // Ustawienia Manualne Pro
     var isManualPanelOpen by remember { mutableStateOf(false) }
     var activeTab by remember { mutableStateOf(ManualTab.ISO) }
     
@@ -202,7 +196,6 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
     var cameraCharacteristics: CameraCharacteristics? by remember { mutableStateOf(null) }
     var imageCapture: ImageCapture? by remember { mutableStateOf(null) }
 
-    // Aktualizacja powiększenia obiektywów Samsung S25
     LaunchedEffect(selectedLens) {
         cameraControl?.setZoomRatio(selectedLens.zoomRatio)
     }
@@ -225,30 +218,24 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                             .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                             .setJpegQuality(100)
 
-                        // Podgląd 60 FPS dla ekranu 120Hz AMOLED Samsung S25
                         val previewExtender = Camera2Interop.Extender(previewBuilder)
                         previewExtender.setCaptureRequestOption(
                             CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
                             Range(30, 60)
                         )
 
-                        // Extender dla wyłączenia przetwarzania ISP na matrycy Samsunga
                         listOf(
                             Camera2Interop.Extender(previewBuilder),
                             Camera2Interop.Extender(captureBuilder)
                         ).forEach { extender ->
-                            // Wyłączenie algorytmów obróbki systemowej One UI
                             extender.setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_OFF)
                             extender.setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
                             extender.setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE, CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE_OFF)
                             extender.setCaptureRequestOption(CaptureRequest.TONEMAP_MODE, CaptureRequest.TONEMAP_MODE_FAST)
                             extender.setCaptureRequestOption(CaptureRequest.HOT_PIXEL_MODE, CaptureRequest.HOT_PIXEL_MODE_OFF)
                             extender.setCaptureRequestOption(CaptureRequest.SHADING_MODE, CaptureRequest.SHADING_MODE_OFF)
-
-                            // Wyłączenie autorskich trybów scen Samsunga
                             extender.setCaptureRequestOption(CaptureRequest.CONTROL_SCENE_MODE, CaptureRequest.CONTROL_SCENE_MODE_DISABLED)
 
-                            // Ręczne parametry ekspozycji
                             if (selectedIso != -1 || selectedShutter.nanos != -1L) {
                                 extender.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
                                 if (selectedIso != -1) {
@@ -262,10 +249,8 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                                 extender.setCaptureRequestOption(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, selectedEv)
                             }
 
-                            // Balans Bieli
                             extender.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, selectedWb.mode)
 
-                            // Manual Focus
                             if (selectedFocus.diopters >= 0f) {
                                 extender.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
                                 extender.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, selectedFocus.diopters)
@@ -296,12 +281,10 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                             
                             cameraControl = camera.cameraControl
                             cameraControl?.setZoomRatio(selectedLens.zoomRatio)
-
-                            // Pobranie właściwości aparatu Samsung
                             cameraCharacteristics = Camera2Interop.extractCameraCharacteristics(camera.cameraInfo)
 
                         } catch (exc: Exception) {
-                            Log.e("RawGCamS25", "Błąd inicjalizacji aparatu Samsung", exc)
+                            Log.e("RawGCamS25", "Błąd inicjalizacji aparatu", exc)
                         }
                     }, ContextCompat.getMainExecutor(ctx))
 
@@ -378,7 +361,6 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                 .padding(bottom = 24.dp, top = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Przełącznik obiektywów optycznych Galaxy S25 (0.6x, 1x, 3x, 5x)
             if (lensFacing == CameraSelector.LENS_FACING_BACK) {
                 Row(
                     modifier = Modifier
@@ -407,7 +389,6 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                 }
             }
 
-            // Panel Manualny
             AnimatedVisibility(
                 visible = isManualPanelOpen,
                 enter = fadeIn() + expandVertically(),
@@ -551,7 +532,6 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                     }
                 }
 
-                // Przycisk Migawki
                 Box(
                     modifier = Modifier
                         .size(80.dp)
@@ -671,19 +651,7 @@ private fun takeS25Picture(
 
                     uri?.let { targetUri ->
                         resolver.openOutputStream(targetUri)?.use { outputStream ->
-                            if (isDngMode && cameraCharacteristics != null && image.image != null) {
-                                // Zapis czystej matrycy do formatu DNG
-                                val captureResult = image.imageInfo.tagBundle as? CaptureResult
-                                if (captureResult != null) {
-                                    val dngCreator = DngCreator(cameraCharacteristics, captureResult)
-                                    dngCreator.writeImage(outputStream, image.image!!)
-                                    dngCreator.close()
-                                } else {
-                                    writeProxyToStream(image, outputStream)
-                                }
-                            } else {
-                                writeProxyToStream(image, outputStream)
-                            }
+                            writeProxyToStream(image, outputStream)
                         }
                         ContextCompat.getMainExecutor(context).execute {
                             onCaptured(targetUri)
