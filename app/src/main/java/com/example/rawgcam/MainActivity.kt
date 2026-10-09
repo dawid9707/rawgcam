@@ -150,7 +150,7 @@ val SHUTTER_SPEEDS = listOf(
     ShutterOption("30s", 30_000_000_000L)
 )
 
-// Rozszerzone zakresem ISO dla Galaxy S25 (ISO 50 do 12800)
+// Rozszerzony zakres ISO dla Galaxy S25 (ISO 50 do 12800)
 val ISO_OPTIONS = listOf(-1, 50, 100, 200, 400, 800, 1600, 3200, 6400, 12800)
 
 data class WbOption(val label: String, val mode: Int)
@@ -158,7 +158,7 @@ data class WbOption(val label: String, val mode: Int)
 val WB_OPTIONS = listOf(
     WbOption("Auto", CaptureRequest.CONTROL_AWB_MODE_AUTO),
     WbOption("Słońce", CaptureRequest.CONTROL_AWB_MODE_DAYLIGHT),
-    WbOption("Chmury", CaptureRequest.CONTROL_AWB_MODE_CLOUDY),
+    WbOption("Chmury", CaptureRequest.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT),
     WbOption("Żarówka", CaptureRequest.CONTROL_AWB_MODE_INCANDESCENT),
     WbOption("Fluoresc.", CaptureRequest.CONTROL_AWB_MODE_FLUORESCENT)
 )
@@ -225,14 +225,14 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                             .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                             .setJpegQuality(100)
 
-                        // 1. Podgląd w 60 FPS dla ekranu 120Hz AMOLED Samsung S25
+                        // Podgląd 60 FPS dla ekranu 120Hz AMOLED Samsung S25
                         val previewExtender = Camera2Interop.Extender(previewBuilder)
                         previewExtender.setCaptureRequestOption(
                             CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
                             Range(30, 60)
                         )
 
-                        // 2. Extender dla wyłączenia przetwarzania ISP na matrycy Samsunga
+                        // Extender dla wyłączenia przetwarzania ISP na matrycy Samsunga
                         listOf(
                             Camera2Interop.Extender(previewBuilder),
                             Camera2Interop.Extender(captureBuilder)
@@ -298,8 +298,6 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                             cameraControl?.setZoomRatio(selectedLens.zoomRatio)
 
                             // Pobranie właściwości aparatu Samsung
-                            val cameraManager = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-                            val cameraId = Camera2Interop.extractCameraCharacteristics(camera.cameraInfo).get(CameraCharacteristics.LENS_FACING)
                             cameraCharacteristics = Camera2Interop.extractCameraCharacteristics(camera.cameraInfo)
 
                         } catch (exc: Exception) {
