@@ -296,10 +296,11 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                             
                             cameraControl = camera.cameraControl
                             cameraControl?.setZoomRatio(selectedLens.zoomRatio)
-
-                            // Pobranie właściwości aparatu Samsung
-                            cameraCharacteristics = Camera2Interop.extractCameraCharacteristics(camera.cameraInfo)
-
+                        
+                            // Pobranie właściwości aparatu Samsung - CORRECTED
+                            val cameraInfo = Camera2CameraInfo.from(camera.cameraInfo)
+                            cameraCharacteristics = cameraInfo.cameraCharacteristics
+                        
                         } catch (exc: Exception) {
                             Log.e("RawGCamS25", "Błąd inicjalizacji aparatu Samsung", exc)
                         }
