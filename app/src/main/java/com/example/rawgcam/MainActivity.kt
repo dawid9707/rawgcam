@@ -4,12 +4,15 @@ import android.Manifest
 import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
-import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.*
+import android.media.Image
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
+import android.util.Range
+import android.util.Size
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -37,12 +40,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import java.io.FileOutputStream
+import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.ExecutorService
@@ -108,14 +113,27 @@ class MainActivity : ComponentActivity() {
 
 enum class CaptureMode(val label: String) {
     ZERO_PROCESSING("Zero ISP"),
-    RAW_SENSOR("Direct RAW"),
+    RAW_SENSOR("Direct DNG RAW"),
     FAST_YUV("Fast Frame")
 }
 
+data class LensOption(val label: String, val zoomRatio: Float)
+
+// Dedykowane ogniskowe dla obiektywów Samsung Galaxy S25 / S25 Ultra
+val S25_LENSES = listOf(
+    LensOption("0.6x", 0.6f), // Ultra Wide
+    LensOption("1x", 1.0f),   // Main ISOCELL
+    LensOption("3x", 3.0f),   // Telephoto 1
+    LensOption("5x", 5.0f)    // Periscope Telephoto 2
+)
+
 data class ShutterOption(val label: String, val nanos: Long)
 
+// Rozszerzone czasy migawki dopasowane do sensorów Samsung ISOCELL (1/8000s - 30s)
 val SHUTTER_SPEEDS = listOf(
     ShutterOption("Auto", -1L),
+    ShutterOption("1/8000s", 125_000L),
+    ShutterOption("1/4000s", 250_000L),
     ShutterOption("1/2000s", 500_000L),
     ShutterOption("1/1000s", 1_000_000L),
     ShutterOption("1/500s", 2_000_000L),
@@ -125,17 +143,22 @@ val SHUTTER_SPEEDS = listOf(
     ShutterOption("1/30s", 33_333_333L),
     ShutterOption("1/15s", 66_666_666L),
     ShutterOption("1/4s", 250_000_000L),
-    ShutterOption("1s", 1_000_000_000L)
+    ShutterOption("1s", 1_000_000_000L),
+    ShutterOption("2s", 2_000_000_000L),
+    ShutterOption("5s", 5_000_000_000L),
+    ShutterOption("10s", 10_000_000_000L),
+    ShutterOption("30s", 30_000_000_000L)
 )
 
-val ISO_OPTIONS = listOf(-1, 100, 200, 400, 800, 1600, 3200, 6400)
+// Rozszerzone zakresem ISO dla Galaxy S25 (ISO 50 do 12800)
+val ISO_OPTIONS = listOf(-1, 50, 100, 200, 400, 800, 1600, 3200, 6400, 12800)
 
 data class WbOption(val label: String, val mode: Int)
 
 val WB_OPTIONS = listOf(
     WbOption("Auto", CaptureRequest.CONTROL_AWB_MODE_AUTO),
     WbOption("Słońce", CaptureRequest.CONTROL_AWB_MODE_DAYLIGHT),
-    WbOption("Chmury", CaptureRequest.CONTROL_AWB_MODE_DAYLIGHT), 
+    WbOption("Chmury", CaptureRequest.CONTROL_AWB_MODE_CLOUDY),
     WbOption("Żarówka", CaptureRequest.CONTROL_AWB_MODE_INCANDESCENT),
     WbOption("Fluoresc.", CaptureRequest.CONTROL_AWB_MODE_FLUORESCENT)
 )
@@ -158,9 +181,10 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
     val lifecycleOwner = LocalLifecycleOwner.current
 
     var selectedMode by remember { mutableStateOf(CaptureMode.ZERO_PROCESSING) }
+    var selectedLens by remember { mutableStateOf(S25_LENSES[1]) } // Domyślnie 1x Wide
     var isGridEnabled by remember { mutableStateOf(false) }
     var isFlashEnabled by remember { mutableStateOf(false) }
-    var lensFacing by remember { mutableStateOf(CameraSelector.LENS_FACING_BACK) }
+    var lensFacing by remember { mutableIntStateOf(CameraSelector.LENS_FACING_BACK) }
     var lastCapturedUri by remember { mutableStateOf<Uri?>(null) }
     var isCapturing by remember { mutableStateOf(false) }
 
@@ -168,18 +192,24 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
     var isManualPanelOpen by remember { mutableStateOf(false) }
     var activeTab by remember { mutableStateOf(ManualTab.ISO) }
     
-    var selectedIso by remember { mutableIntStateOf(-1) } // -1 = Auto
-    var selectedShutter by remember { mutableStateOf(SHUTTER_SPEEDS[0]) } // Auto
-    var selectedEv by remember { mutableIntStateOf(0) } // 0 EV
-    var selectedWb by remember { mutableStateOf(WB_OPTIONS[0]) } // Auto WB
-    var selectedFocus by remember { mutableStateOf(FOCUS_OPTIONS[0]) } // Auto Focus
+    var selectedIso by remember { mutableIntStateOf(-1) }
+    var selectedShutter by remember { mutableStateOf(SHUTTER_SPEEDS[0]) }
+    var selectedEv by remember { mutableIntStateOf(0) }
+    var selectedWb by remember { mutableStateOf(WB_OPTIONS[0]) }
+    var selectedFocus by remember { mutableStateOf(FOCUS_OPTIONS[0]) }
 
+    var cameraControl: CameraControl? by remember { mutableStateOf(null) }
+    var cameraCharacteristics: CameraCharacteristics? by remember { mutableStateOf(null) }
     var imageCapture: ImageCapture? by remember { mutableStateOf(null) }
+
+    // Aktualizacja powiększenia obiektywów Samsung S25
+    LaunchedEffect(selectedLens) {
+        cameraControl?.setZoomRatio(selectedLens.zoomRatio)
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
-        // Przeładowanie aparatu przy zmianie parametrów manualnych
-        key(lensFacing, selectedIso, selectedShutter, selectedEv, selectedWb, selectedFocus) {
+        key(lensFacing, selectedIso, selectedShutter, selectedEv, selectedWb, selectedFocus, selectedMode) {
             AndroidView(
                 factory = { ctx ->
                     val previewView = PreviewView(ctx).apply {
@@ -195,12 +225,19 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                             .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                             .setJpegQuality(100)
 
-                        // Extender dla podglądu i przechwytywania kadrów
+                        // 1. Podgląd w 60 FPS dla ekranu 120Hz AMOLED Samsung S25
+                        val previewExtender = Camera2Interop.Extender(previewBuilder)
+                        previewExtender.setCaptureRequestOption(
+                            CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                            Range(30, 60)
+                        )
+
+                        // 2. Extender dla wyłączenia przetwarzania ISP na matrycy Samsunga
                         listOf(
                             Camera2Interop.Extender(previewBuilder),
                             Camera2Interop.Extender(captureBuilder)
                         ).forEach { extender ->
-                            // 1. Zero ISP processing
+                            // Wyłączenie algorytmów obróbki systemowej One UI
                             extender.setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_OFF)
                             extender.setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
                             extender.setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE, CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE_OFF)
@@ -208,7 +245,10 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                             extender.setCaptureRequestOption(CaptureRequest.HOT_PIXEL_MODE, CaptureRequest.HOT_PIXEL_MODE_OFF)
                             extender.setCaptureRequestOption(CaptureRequest.SHADING_MODE, CaptureRequest.SHADING_MODE_OFF)
 
-                            // 2. Ręczna Ekspozycja (ISO & Czas Naświetlania)
+                            // Wyłączenie autorskich trybów scen Samsunga
+                            extender.setCaptureRequestOption(CaptureRequest.CONTROL_SCENE_MODE, CaptureRequest.CONTROL_SCENE_MODE_DISABLED)
+
+                            // Ręczne parametry ekspozycji
                             if (selectedIso != -1 || selectedShutter.nanos != -1L) {
                                 extender.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
                                 if (selectedIso != -1) {
@@ -222,10 +262,10 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                                 extender.setCaptureRequestOption(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, selectedEv)
                             }
 
-                            // 3. Ręczny Balans Bieli (WB)
+                            // Balans Bieli
                             extender.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, selectedWb.mode)
 
-                            // 4. Ręczna Ostrość (Focus)
+                            // Manual Focus
                             if (selectedFocus.diopters >= 0f) {
                                 extender.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
                                 extender.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, selectedFocus.diopters)
@@ -247,14 +287,23 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
 
                         try {
                             cameraProvider.unbindAll()
-                            cameraProvider.bindToLifecycle(
+                            val camera = cameraProvider.bindToLifecycle(
                                 lifecycleOwner,
                                 cameraSelector,
                                 preview,
                                 imgCapture
                             )
+                            
+                            cameraControl = camera.cameraControl
+                            cameraControl?.setZoomRatio(selectedLens.zoomRatio)
+
+                            // Pobranie właściwości aparatu Samsung
+                            val cameraManager = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                            val cameraId = Camera2Interop.extractCameraCharacteristics(camera.cameraInfo).get(CameraCharacteristics.LENS_FACING)
+                            cameraCharacteristics = Camera2Interop.extractCameraCharacteristics(camera.cameraInfo)
+
                         } catch (exc: Exception) {
-                            Log.e("RawGCam", "Błąd inicjalizacji aparatu", exc)
+                            Log.e("RawGCamS25", "Błąd inicjalizacji aparatu Samsung", exc)
                         }
                     }, ContextCompat.getMainExecutor(ctx))
 
@@ -268,7 +317,6 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
             CameraGridOverlay()
         }
 
-        // Górny pasek kontrolny
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -287,7 +335,6 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                 )
             }
 
-            // Przycisk otwierania panelu Manual/Pro
             Surface(
                 onClick = { isManualPanelOpen = !isManualPanelOpen },
                 color = if (isManualPanelOpen) Color(0xFF8AB4F8) else Color(0xFF1E88E5).copy(alpha = 0.85f),
@@ -305,7 +352,7 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = if (isManualPanelOpen) "Zamknij PRO" else "Ustawienia PRO",
+                        text = if (isManualPanelOpen) "Zamknij PRO" else "Ustawienia PRO S25",
                         color = if (isManualPanelOpen) Color.Black else Color.White,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold
@@ -325,16 +372,44 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
             }
         }
 
-        // Dolny panel ustawień i migawki
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
-                .background(Color.Black.copy(alpha = 0.75f))
+                .background(Color.Black.copy(alpha = 0.8f))
                 .padding(bottom = 24.dp, top = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Panel Manualny (Gdy otwarty)
+            // Przełącznik obiektywów optycznych Galaxy S25 (0.6x, 1x, 3x, 5x)
+            if (lensFacing == CameraSelector.LENS_FACING_BACK) {
+                Row(
+                    modifier = Modifier
+                        .padding(bottom = 12.dp)
+                        .background(Color.DarkGray.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    S25_LENSES.forEach { lens ->
+                        val isSelected = selectedLens == lens
+                        Box(
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(if (isSelected) Color(0xFF8AB4F8) else Color.Transparent)
+                                .clickable { selectedLens = lens }
+                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = lens.label,
+                                color = if (isSelected) Color.Black else Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Panel Manualny
             AnimatedVisibility(
                 visible = isManualPanelOpen,
                 enter = fadeIn() + expandVertically(),
@@ -345,7 +420,6 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                         .fillMaxWidth()
                         .padding(bottom = 12.dp)
                 ) {
-                    // Zakładki ustawień (ISO, Shutter, EV, WB, Focus)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -376,7 +450,6 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
 
                     HorizontalDivider(color = Color.DarkGray, thickness = 0.5.dp, modifier = Modifier.padding(vertical = 6.dp))
 
-                    // Opcje dla wybranej zakładki
                     LazyRow(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -386,9 +459,8 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                         when (activeTab) {
                             ManualTab.ISO -> {
                                 items(ISO_OPTIONS) { iso ->
-                                    val isSelected = selectedIso == iso
                                     FilterChip(
-                                        selected = isSelected,
+                                        selected = selectedIso == iso,
                                         onClick = { selectedIso = iso },
                                         label = { Text(if (iso == -1) "Auto" else "$iso") }
                                     )
@@ -396,9 +468,8 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                             }
                             ManualTab.SHUTTER -> {
                                 items(SHUTTER_SPEEDS) { shutter ->
-                                    val isSelected = selectedShutter == shutter
                                     FilterChip(
-                                        selected = isSelected,
+                                        selected = selectedShutter == shutter,
                                         onClick = { selectedShutter = shutter },
                                         label = { Text(shutter.label) }
                                     )
@@ -406,9 +477,8 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                             }
                             ManualTab.EV -> {
                                 items((-3..3).toList()) { ev ->
-                                    val isSelected = selectedEv == ev
                                     FilterChip(
-                                        selected = isSelected,
+                                        selected = selectedEv == ev,
                                         onClick = { selectedEv = ev },
                                         label = { Text(if (ev > 0) "+$ev EV" else "$ev EV") }
                                     )
@@ -416,9 +486,8 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                             }
                             ManualTab.WB -> {
                                 items(WB_OPTIONS) { wb ->
-                                    val isSelected = selectedWb == wb
                                     FilterChip(
-                                        selected = isSelected,
+                                        selected = selectedWb == wb,
                                         onClick = { selectedWb = wb },
                                         label = { Text(wb.label) }
                                     )
@@ -426,9 +495,8 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                             }
                             ManualTab.FOCUS -> {
                                 items(FOCUS_OPTIONS) { focus ->
-                                    val isSelected = selectedFocus == focus
                                     FilterChip(
-                                        selected = isSelected,
+                                        selected = selectedFocus == focus,
                                         onClick = { selectedFocus = focus },
                                         label = { Text(focus.label) }
                                     )
@@ -439,7 +507,6 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                 }
             }
 
-            // Przełącznik trybów przetwarzania
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -460,7 +527,6 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                 }
             }
 
-            // Przyciski migawki, podglądu i zmiany obiektywu
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -475,7 +541,7 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                         .background(Color.DarkGray)
                         .clickable {
                             lastCapturedUri?.let {
-                                Toast.makeText(context, "Zdjęcie zapisane w galerii", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Zdjęcie zapisane w galerii S25", Toast.LENGTH_SHORT).show()
                             }
                         },
                     contentAlignment = Alignment.Center
@@ -487,6 +553,7 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                     }
                 }
 
+                // Przycisk Migawki
                 Box(
                     modifier = Modifier
                         .size(80.dp)
@@ -498,14 +565,16 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                         .clickable {
                             if (!isCapturing && imageCapture != null) {
                                 isCapturing = true
-                                takeUnprocessedPicture(
+                                takeS25Picture(
                                     context = context,
                                     imageCapture = imageCapture!!,
+                                    cameraCharacteristics = cameraCharacteristics,
+                                    isDngMode = selectedMode == CaptureMode.RAW_SENSOR,
                                     executor = cameraExecutor,
                                     onCaptured = { uri ->
                                         isCapturing = false
                                         lastCapturedUri = uri
-                                        Toast.makeText(context, "Zapisano bez ISP processing!", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "Zapisano bez obróbki One UI!", Toast.LENGTH_SHORT).show()
                                     },
                                     onError = { exc ->
                                         isCapturing = false
@@ -573,17 +642,22 @@ fun CameraGridOverlay() {
     }
 }
 
-private fun takeUnprocessedPicture(
+private fun takeS25Picture(
     context: Context,
     imageCapture: ImageCapture,
+    cameraCharacteristics: CameraCharacteristics?,
+    isDngMode: Boolean,
     executor: ExecutorService,
     onCaptured: (Uri) -> Unit,
     onError: (Exception) -> Unit
 ) {
     val name = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis())
+    val mimeType = if (isDngMode) "image/x-adobe-dng" else "image/jpeg"
+    val extension = if (isDngMode) ".dng" else ".jpg"
+
     val contentValues = ContentValues().apply {
-        put(MediaStore.MediaColumns.DISPLAY_NAME, "RAW_GCAM_$name.jpg")
-        put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+        put(MediaStore.MediaColumns.DISPLAY_NAME, "S25_RAW_$name$extension")
+        put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/RawGCam")
         }
@@ -594,24 +668,31 @@ private fun takeUnprocessedPicture(
         object : ImageCapture.OnImageCapturedCallback() {
             override fun onCaptureSuccess(image: ImageProxy) {
                 try {
-                    val buffer = image.planes[0].buffer
-                    val bytes = ByteArray(buffer.remaining())
-                    buffer.get(bytes)
-
                     val resolver = context.contentResolver
                     val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
 
                     uri?.let { targetUri ->
                         resolver.openOutputStream(targetUri)?.use { outputStream ->
-                            outputStream.write(bytes)
-                            outputStream.flush()
+                            if (isDngMode && cameraCharacteristics != null && image.image != null) {
+                                // Zapis czystej matrycy do formatu DNG
+                                val captureResult = image.imageInfo.tagBundle as? CaptureResult
+                                if (captureResult != null) {
+                                    val dngCreator = DngCreator(cameraCharacteristics, captureResult)
+                                    dngCreator.writeImage(outputStream, image.image!!)
+                                    dngCreator.close()
+                                } else {
+                                    writeProxyToStream(image, outputStream)
+                                }
+                            } else {
+                                writeProxyToStream(image, outputStream)
+                            }
                         }
                         ContextCompat.getMainExecutor(context).execute {
                             onCaptured(targetUri)
                         }
                     } ?: run {
                         ContextCompat.getMainExecutor(context).execute {
-                            onError(Exception("Nie udało się utworzyć pliku MediaStore"))
+                            onError(Exception("Nie udało się przydzielić pamięci MediaStore"))
                         }
                     }
                 } catch (e: Exception) {
@@ -630,4 +711,12 @@ private fun takeUnprocessedPicture(
             }
         }
     )
+}
+
+private fun writeProxyToStream(image: ImageProxy, outputStream: java.io.OutputStream) {
+    val buffer = image.planes[0].buffer
+    val bytes = ByteArray(buffer.remaining())
+    buffer.get(bytes)
+    outputStream.write(bytes)
+    outputStream.flush()
 }
