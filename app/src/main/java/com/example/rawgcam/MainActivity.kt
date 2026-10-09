@@ -158,7 +158,7 @@ data class WbOption(val label: String, val mode: Int)
 val WB_OPTIONS = listOf(
     WbOption("Auto", CaptureRequest.CONTROL_AWB_MODE_AUTO),
     WbOption("Słońce", CaptureRequest.CONTROL_AWB_MODE_DAYLIGHT),
-    WbOption("Chmury", CaptureRequest.CONTROL_AWB_MODE_CLOUDY),
+    WbOption("Chmury", CaptureRequest.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT),
     WbOption("Żarówka", CaptureRequest.CONTROL_AWB_MODE_INCANDESCENT),
     WbOption("Fluoresc.", CaptureRequest.CONTROL_AWB_MODE_FLUORESCENT)
 )
@@ -298,8 +298,6 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                             cameraControl?.setZoomRatio(selectedLens.zoomRatio)
 
                             // Pobranie właściwości aparatu Samsung
-                            val cameraManager = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-                            val cameraId = Camera2Interop.extractCameraCharacteristics(camera.cameraInfo).get(CameraCharacteristics.LENS_FACING)
                             cameraCharacteristics = Camera2Interop.extractCameraCharacteristics(camera.cameraInfo)
 
                         } catch (exc: Exception) {
