@@ -15,6 +15,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.*
@@ -281,7 +282,7 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                             
                             cameraControl = camera.cameraControl
                             cameraControl?.setZoomRatio(selectedLens.zoomRatio)
-                            cameraCharacteristics = Camera2Interop.extractCameraCharacteristics(camera.cameraInfo)
+                            cameraCharacteristics = Camera2CameraInfo.extractCameraCharacteristics(camera.cameraInfo)
 
                         } catch (exc: Exception) {
                             Log.e("RawGCamS25", "Błąd inicjalizacji aparatu", exc)
