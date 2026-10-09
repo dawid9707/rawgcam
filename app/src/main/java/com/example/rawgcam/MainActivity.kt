@@ -18,7 +18,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.camera2.interop.Camera2Interop
-import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -159,7 +158,7 @@ data class WbOption(val label: String, val mode: Int)
 val WB_OPTIONS = listOf(
     WbOption("Auto", CaptureRequest.CONTROL_AWB_MODE_AUTO),
     WbOption("Słońce", CaptureRequest.CONTROL_AWB_MODE_DAYLIGHT),
-    WbOption("Chmury", CaptureRequest.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT),
+    WbOption("Chmury", CaptureRequest.CONTROL_AWB_MODE_CLOUDY),
     WbOption("Żarówka", CaptureRequest.CONTROL_AWB_MODE_INCANDESCENT),
     WbOption("Fluoresc.", CaptureRequest.CONTROL_AWB_MODE_FLUORESCENT)
 )
@@ -297,11 +296,12 @@ fun GCamRawApp(cameraExecutor: ExecutorService) {
                             
                             cameraControl = camera.cameraControl
                             cameraControl?.setZoomRatio(selectedLens.zoomRatio)
-                        
-                            // Pobranie właściwości aparatu Samsung - CORRECTED
-                            val cameraInfo = Camera2CameraInfo.from(camera.cameraInfo)
-                            cameraCharacteristics = cameraInfo.cameraCharacteristics
-                        
+
+                            // Pobranie właściwości aparatu Samsung
+                            val cameraManager = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                            val cameraId = Camera2Interop.extractCameraCharacteristics(camera.cameraInfo).get(CameraCharacteristics.LENS_FACING)
+                            cameraCharacteristics = Camera2Interop.extractCameraCharacteristics(camera.cameraInfo)
+
                         } catch (exc: Exception) {
                             Log.e("RawGCamS25", "Błąd inicjalizacji aparatu Samsung", exc)
                         }
